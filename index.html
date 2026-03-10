@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clinical Medication Safety Decision Tool</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#eef1f7;margin:0}
+.container{max-width:1100px;margin:auto;background:white;padding:30px;border-radius:10px;margin-top:25px;box-shadow:0 6px 18px rgba(0,0,0,0.12)}
+h1{text-align:center;margin-bottom:5px}
+h2{margin-top:25px;border-bottom:1px solid #ddd;padding-bottom:4px}
+label{font-weight:bold;display:block;margin-top:14px}
+input,select,textarea{width:100%;padding:9px;margin-top:4px;border-radius:6px;border:1px solid #ccc}
+button{margin-top:20px;padding:12px 20px;background:#2c6bed;color:white;border:none;border-radius:6px;font-size:15px;cursor:pointer}
+button:hover{background:#1e4fb8}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+#results{margin-top:30px;padding:20px;background:#f3f6ff;border-radius:8px;white-space:pre-wrap}
+.warning{color:#b00000;font-weight:bold}
+.notice{font-size:13px;color:#555}
+.badge{display:inline-block;padding:4px 8px;border-radius:4px;font-size:12px;margin-left:6px}
+.major{background:#ffdddd;color:#900}
+.moderate{background:#fff0cc;color:#8a5a00}
+.minor{background:#e3f6e3;color:#0a6a0a}
+.links a{display:block;margin-top:4px}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<h1>Clinical Medication Safety Tool</h1>
+<p class="notice">Educational clinical decision support tool using public medical datasets. Do NOT enter personal identifiers.</p>
+
+<h2>Medication Input</h2>
+
+<div class="grid">
+<div>
+<label>Medication or Supplement</label>
+<input id="medication" placeholder="Example: Ibuprofen">
+
+<label>Dose</label>
+<input id="dose">
+
+<label>Purpose</label>
+<input id="purpose">
+</div>
+
+<div>
+<label>Medical Conditions</label>
+<textarea id="conditions"></textarea>
+
+<label>Allergies or Past Drug Reactions</label>
+<textarea id="allergies"></textarea>
+</div>
+</div>
+
+<label>Current Medications (comma separated)</label>
+<textarea id="currentMeds" placeholder="Example: lisinopril, warfarin"></textarea>
+
+<button onclick="runAnalysis()">Run Clinical Safety Analysis</button>
+<button onclick="window.print()">Export / Print Report</button>
+
+<div id="results"></div>
+
+</div>
+
+<script>
+
+async function getRxCui(name){
+
+const resp=await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(name)}`);
+const data=await resp.json();
+
+return data.idGroup?.rxnormId?.[0] || null;
+
+}
+
+async function runAnalysis(){
+
+const med=document.getElementById("medication").value.trim();
+const otherMeds=document.getElementById("currentMeds").value.split(",").map(m=>m.trim()).filter(m=>m);
+
+let report="CLINICAL MEDICATION SAFETY REPORT\n\n";
+
+if(!med){
+alert("Enter a medication first");
+return;
+}
+
+/* DAILYMED */
+
+report+="DRUG LABEL INFORMATION (DailyMed)\n";
+
+try{
+
+const labelResp=await fetch(`https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?drug_name=${med}`);
+const labelData=await labelResp.json();
+
+if(labelData.data.length>0){
+
+const label=labelData.data[0];
+
+report+=`Drug Label: ${label.title}\n`;
+report+=`Manufacturer: ${label.author}\n`;
+report+=`Set ID: ${label.setid}\n\n`;
+
+}else{
+report+="No official label found.\n\n";
+}
+
+}catch(e){
+report+="DailyMed lookup failed.\n\n";
+}
+
+
+/* RXNAV INTERACTIONS */
+
+report+="DRUG INTERACTION ANALYSIS (RxNav)\n";
+
+try{
+
+const medRxcui=await getRxCui(med);
+
+if(!medRxcui){
+report+="Unable to identify medication in RxNorm database.\n";
+}
+
+for(const drug of otherMeds){
+
+const rxcui=await getRxCui(drug);
+
+if(!rxcui){
+report+=`No RxNorm identifier found for ${drug}\n`;
+continue;
+}
+
+const resp=await fetch(`https://rxnav.nlm.nih.gov/REST/interaction/list.json?rxcuis=${medRxcui}+${rxcui}`);
+const data=await resp.json();
+
+if(data.fullInteractionTypeGroup){
+
+const interaction=data.fullInteractionTypeGroup[0].fullInteractionType[0];
+const severity=interaction.interactionPair[0].severity || "unknown";
+
+report+=`Interaction with ${drug}: ${severity.toUpperCase()}\n`;
+report+=`${interaction.interactionPair[0].description}\n\n`;
+
+}else{
+
+report+=`Interaction with ${drug}: none reported in RxNav database.\n\n`;
+
+}
+
+}
+
+}catch(e){
+report+="Interaction analysis failed.\n\n";
+}
+
+
+/* PUBMED RESEARCH */
+
+report+="RECENT RESEARCH EVIDENCE (PubMed)\n";
+
+try{
+
+const search=await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(med)}&retmode=json&retmax=5`);
+const data=await search.json();
+
+for(const id of data.esearchresult.idlist){
+
+report+=`https://pubmed.ncbi.nlm.nih.gov/${id}/\n`;
+
+}
+
+report+="\n";
+
+}catch(e){
+report+="PubMed lookup failed.\n";
+}
+
+
+/* COST RESOURCES */
+
+report+="MEDICATION COST RESOURCES\n";
+report+="Check pricing at:\n";
+report+="GoodRx\nSingleCare\nWellRx\nBlink Health\nOptum Perks\nAmazon Pharmacy\n\n";
+
+
+/* SAFETY */
+
+report+="SAFETY NOTICE\n";
+report+="Educational clinical support only. Consult a licensed healthcare professional before making medication decisions.";
+
+
+
+document.getElementById("results").innerText=report;
+
+}
+
+</script>
+
+</body>
+</html>
